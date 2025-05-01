@@ -1,7 +1,7 @@
 'use client';
 
+import React, { useState, useEffect, useRef } from 'react';
 import type { Coordinates } from '@/services/coordinates';
-import type { GenerateOxbowReportOutput } from '@/ai/flows/generate-oxbow-report';
 import 'leaflet/dist/leaflet.css';
 import * as L from 'leaflet';
 
@@ -10,7 +10,6 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Loader2, LocateFixed, CloudIcon } from 'lucide-react';
-import React, { useEffect, useRef, useState } from 'react';
 import { useToast } from '@/hooks/use-toast';
 import { Toaster } from '@/components/ui/toaster';
 
@@ -21,38 +20,288 @@ interface AnalyzeDataAndPredictParams {
   latitude: number;
   longitude: number;
   elevation: number | null;
+  riverHistoricData: string | null;
   riverData: string | null;
+  soilType?: string;
+  rockFormation?: string;
+  waterTable?: string;
+  soilMoisture?: string;
+  floodingRisk?: string;
 }
 
-interface PredictionResult {
+interface GenerateOxbowReportOutput {
   prediction: string;
   elevation: string;
+  riverFlowDifference?: string
+  riverHistoricData: string;
   riverFlow: string;
   reasoning: string;
   latitude: number;
   longitude: number;
+  soilType: string;
+  rockFormation: string;
+  waterTable: string;
+  soilMoisture: string;
+  floodingRisk: string;
 }
 
-const analyzeDataAndPredict = async (data: AnalyzeDataAndPredictParams): Promise<PredictionResult> => {
-  const { latitude, longitude, elevation, riverData } = data;
-  const riverFlow = riverData ? parseFloat(riverData) : 0;
+// Real Data Fetching Functions
 
-  let prediction = 'Low likelihood of oxbow lake formation.';
-  let reasoning = 'Not enough data to make a prediction.';
+const getSoilType = async (latitude: number, longitude: number) => {
+  try {
+    const url = `https://sdmdataaccess.nrcs.usda.gov/Tabular/post.rest?format=json&Request=GetSoilReport&latitude=${latitude}&longitude=${longitude}&Report=SoilType`;
+    const response = await fetch(url);
+    const data = await response.json();
 
-  if (elevation && riverData) {
-    if (elevation < 100) {
-      prediction = 'Moderate likelihood of oxbow lake formation.';
-      reasoning = `Due to the low elevation of ${elevation} meters, there is a moderate likelihood of oxbow lake formation.`;
-      if (riverFlow > 500) {
-        prediction = 'High likelihood of oxbow lake formation.';
-        reasoning = `Due to the low elevation of ${elevation} meters and a high river flow of ${riverFlow} cfs, there is a high likelihood of oxbow lake formation.`;
+    if (data && data.Table && data.Table.length > 0) {
+        const soilData = data.Table;
+        const soilType = soilData[0].soilTypeName
+        console.log("Soil Type:", soilType);
+        return soilType;
+      } else {
+        console.log("Soil data not found");
+        return "Unknown";
       }
+
+  } catch (error) {
+    console.error('Error fetching soil type:', error);
+    return "Unknown";
+  }
+};
+
+const getRockFormation = async (latitude: number, longitude: number) => {
+  try {
+    const url = `https://mrdata.usgs.gov/services/mrds?lat=${latitude}&lon=${longitude}&output=json`;
+    const response = await fetch(url);
+    const data = await response.json();
+    console.log('Rock formation response:', data)
+
+    if (data.features && data.features.length > 0) {
+      const rockFormation = data.features[0].properties.commodity;
+      console.log("Rock formation:", rockFormation);
+      return rockFormation;
     } else {
-      reasoning = `The elevation of ${elevation} meters is not low enough to increase the likelihood of oxbow lake formation.`;
+        console.log("Rock data not found");
+      return "Unknown";
+    }
+  } catch (error) {
+    console.error('Error fetching rock formation:', error);
+    return "Unknown";
+  }
+};
+
+const getWaterTable = async (latitude: number, longitude: number) => {
+    try {
+        const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&sites=01646500&parameterCd=72019`;
+        const response = await fetch(url);
+        const data = await response.json();
+        console.log('Water Table Response:', data);
+        if (data && data.value?.timeSeries && data.value.timeSeries.length > 0) {
+            const value = data.value.timeSeries[0]?.values[0]?.value[0]?.value;
+          return String(value);
+        } else {
+          return "Unknown";
+        }
+      } catch (error) {
+        console.error('Error fetching water table data:', error);
+        return "Unknown";
+      }
+};
+
+const getSoilMoisture = async (latitude: number, longitude: number) => {
+  try {
+    const url = `https://www.sciencebase.gov/catalog/items?q=soil%20moisture%20&format=json`;
+    const response = await fetch(url);
+    const data = await response.json();
+    console.log('Soil Moisture Response:', data);
+    if (data.items && data.items.length > 0) {
+        // extract moisture data (example)
+        const soilMoisture = data.items[0].properties?.text || 'Unknown';
+        return soilMoisture
+    } else {
+        return 'Unknown';
+    }
+
+  } catch (error) {
+    console.error('Error fetching soil moisture:', error);
+    return "Unknown";
+  }
+};
+
+const getFloodingRisk = async (latitude: number, longitude: number) => {
+  try {
+    const url = `https://msc.fema.gov/arcgis/rest/services/public/NFHL/MapServer/1/query?where=IN_COMMUNITY%3D'Yes'&outFields=FLD_ZONE&f=json&geometry=${longitude}%2C${latitude}&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelIntersects`;
+    const response = await fetch(url);
+    const data = await response.json();
+    console.log('Flooding Risk Response:', data);
+    if (data && data.features && data.features.length > 0) {
+        const floodingRisk = data.features[0].attributes.FLD_ZONE;
+        return floodingRisk;
+    }
+    return "Unknown";
+  } catch (error) {
+    console.error('Error fetching flooding risk:', error);
+    return "Unknown";
+  }
+};
+
+const getRiverHistoricData = async (latitude: number, longitude: number) => {
+    const today = new Date();
+    const lastYear = new Date(today.getFullYear() - 1, today.getMonth(), today.getDate());
+    const endDate = today.toISOString().split('T')[0];
+    const startDate = lastYear.toISOString().split('T')[0];
+    try {
+      const url = `https://waterservices.usgs.gov/nwis/dv/?format=json&sites=01646500&startDT=${startDate}&endDT=${endDate}&parameterCd=00060`;
+      const response = await fetch(url);
+      const data = await response.json();
+      console.log('River Historic Data Response:', data);
+      if (data.value && data.value.timeSeries && data.value.timeSeries.length > 0) {
+        const riverData = data.value.timeSeries[0].values[0].value;
+        const totalRiverFlow = riverData.reduce((sum:number, current:any) => sum + parseFloat(current.value), 0);
+        const averageRiverFlow = totalRiverFlow / riverData.length;
+        return String(averageRiverFlow);
+      } else {
+        return 'Unknown';
+      }
+    } catch (error) {
+      console.error('Error fetching river data:', error);
+      return 'Unknown';
+    }
+  };
+
+const analyzeDataAndPredict = async (data: AnalyzeDataAndPredictParams): Promise<GenerateOxbowReportOutput> => {
+  const { latitude, longitude, elevation, riverData, soilType, rockFormation, waterTable, soilMoisture, floodingRisk, riverHistoricData } = data;
+  console.log('analyzeDataAndPredict data:', data);
+
+  if (!elevation || !riverData || !riverHistoricData) {
+    return {
+      prediction: "Not enough data to make a prediction.",
+      elevation: "Data unavailable",
+      riverFlow: "Data unavailable",
+      reasoning: "Elevation or river data is missing.",
+      latitude,
+      longitude,
+      riverHistoricData: 'Unknown',
+      soilType: "Unknown",
+      rockFormation: "Unknown",
+      waterTable: "Unknown",
+      soilMoisture: "Unknown",
+      floodingRisk: "Unknown",
+      
+      
+    };
+  }
+
+  const riverFlow = parseFloat(riverData);
+  let prediction = "Low likelihood of oxbow lake formation.";
+  let reasoning = "The conditions are not favorable for oxbow lake formation.";
+
+  const riverFlowDifference = parseFloat(riverData) - parseFloat(riverHistoricData)
+
+  // Base case: consider elevation and river flow
+  let totalScore = 0
+  if (elevation && elevation < 100) {
+    totalScore += 2
+    reasoning += `The low elevation of ${elevation} meters suggests a higher chance of river meandering and potential oxbow lake formation.`;
+    if (riverFlow && riverFlow > 500) {
+        totalScore += 3
+        reasoning += `With a high river flow of ${riverFlow} cfs, the conditions are very favorable for oxbow lake formation.`;
+    }
+  } else if (riverFlow && riverFlow > 500) {
+    totalScore += 1
+    reasoning += `The high river flow of ${riverFlow} cfs increases the chances of river course changes, potentially leading to oxbow lakes.`;
+  }
+  if (riverFlowDifference && riverFlowDifference > 1000) {
+    totalScore += 3
+    reasoning += ` The river flow difference is significative.`;
+  }
+
+  // Incorporate additional factors
+  if (soilType) {
+    if (soilType.toLowerCase().includes("clay")) {
+        totalScore += 2
+      reasoning += ` The presence of clay soils can further contribute to oxbow formation.`;
+    } else if (soilType.toLowerCase().includes('sand')) {
+        totalScore -= 1
+        reasoning += ` The presence of sandy soil can decrease the probability of oxbow lake formation.`;
+    } else {
+        reasoning += ` The soil type is ${soilType}.`;
     }
   }
-  return { prediction, elevation: `${elevation} meters`, riverFlow: `${riverFlow} cfs`, reasoning, latitude, longitude };
+
+  if (rockFormation) {
+    if (rockFormation.toLowerCase().includes("soft")) {
+        totalScore += 2
+      reasoning += ` The soft rock formation makes the river course more susceptible to change.`;
+    } else if (rockFormation.toLowerCase().includes('hard')) {
+        totalScore -= 1
+        reasoning += ` The presence of hard rock formation makes the river course less susceptible to change.`;
+    } else {
+        reasoning += ` The rock formation is ${rockFormation}.`;
+    }
+  }
+
+  if (waterTable) {
+    if(waterTable.toLowerCase() != 'unknown'){
+        const waterTableNum = parseFloat(waterTable)
+        if (waterTableNum < 10) {
+            totalScore += 2
+          reasoning += ` A shallow water table supports the formation of oxbow lakes.`;
+        } else if(waterTableNum > 20) {
+            totalScore -=1
+            reasoning += ` A deep water table makes oxbow lake formation less likely.`;
+        } else {
+            reasoning += ` The water table is ${waterTable} ft.`;
+        }
+    } else {
+        reasoning += ` The water table is unknown.`;
+    }
+  }
+
+  if (soilMoisture) {
+    if (soilMoisture.toLowerCase().includes("high")) {
+        totalScore += 1
+      reasoning += ` High soil moisture further promotes the process.`;
+    } else if (soilMoisture.toLowerCase().includes("low")){
+        totalScore -=1
+        reasoning += ` Low soil moisture makes oxbow lake formation less likely.`;
+    } else {
+        reasoning += ` The soil moisture is ${soilMoisture}.`;
+    }
+  }
+
+  if (floodingRisk) {
+    if (floodingRisk.toLowerCase().includes("a") || floodingRisk.toLowerCase().includes("ae")) {
+        totalScore += 3
+      reasoning += ` High flooding risk greatly increases the chances of oxbow formation.`;
+    } else {
+        reasoning += ` The flooding risk is ${floodingRisk}.`;
+    }
+  }
+
+  if (totalScore <= 1) {
+      prediction = `Low likelihood of oxbow lake formation.`
+  } else if (totalScore <= 3) {
+    prediction = `Moderate likelihood of oxbow lake formation.`
+  } else if (totalScore > 3){
+      prediction = `High likelihood of oxbow lake formation.`
+  }
+
+  return {
+    prediction,
+    elevation: `${elevation} meters`,
+    riverFlow: `${riverFlow} cfs`,
+    reasoning,
+    riverFlowDifference:`${riverFlowDifference.toFixed(2)} cfs`,
+    riverHistoricData,
+    latitude,
+    longitude,
+    soilType: soilType || 'Unknown',
+    rockFormation: rockFormation || 'Unknown',
+    waterTable: waterTable || 'Unknown',
+    soilMoisture: soilMoisture || 'Unknown',
+    floodingRisk: floodingRisk || 'Unknown',
+  };
 };
 
 export default function Home() {
@@ -65,11 +314,6 @@ export default function Home() {
   const mapRef = useRef<HTMLDivElement>(null);
   const leafletMap = useRef<L.Map | null>(null);
   const markers = useRef<L.Marker[]>([]);
-
-
-  type GenerateOxbowReportOutput = PredictionResult;
-
-
 
   const getElevation = async (latitude: number, longitude: number) => {
     const url = `https://epqs.nationalmap.gov/v1/json?x=${longitude}&y=${latitude}&wkid=4326&units=Meters`;
@@ -84,6 +328,7 @@ export default function Home() {
     }
   };
   const getRiverData = async (latitude: number, longitude: number) => {
+    //Current river data
     const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&sites=01646500&parameterCd=00060`;
     try {
       const response = await fetch(url);
@@ -154,16 +399,32 @@ export default function Home() {
     const elevation = await getElevation(latitude, longitude);
     console.log('Elevation:', elevation);
 
+    const riverHistoricData = await getRiverHistoricData(latitude, longitude);
+    console.log('River Historic Data:', riverHistoricData);
     const riverData = await getRiverData(latitude, longitude);
     console.log('River Data:', riverData);
 
-    const result = await analyzeDataAndPredict({
+    const soilType = await getSoilType(latitude, longitude);
+    const rockFormation = await getRockFormation(latitude, longitude);
+
+    const waterTable = await getWaterTable(latitude, longitude);
+    const soilMoisture = await getSoilMoisture(latitude, longitude);
+    const floodingRisk = await getFloodingRisk(latitude, longitude);
+
+    const report = await analyzeDataAndPredict({
       latitude,
       longitude,
       elevation,
+      riverHistoricData,
       riverData,
+      soilType,
+      rockFormation,
+      waterTable,
+      soilMoisture,
+      floodingRisk,
     });
-    return result;
+
+    return report;
   };
 
   const handlePrediction = async () => {
@@ -353,12 +614,21 @@ export default function Home() {
               <Card className="mt-4 bg-secondary/30">
                 <CardHeader>
                   <CardTitle className="text-lg text-primary">Prediction Report</CardTitle>
-                  <CardDescription>
-                  
-                  </CardDescription>
                 </CardHeader>
                 <CardContent>
-                <p className="text-sm text-secondary-foreground">Latitude: {report.latitude.toFixed(4)}</p> <p className="text-sm text-secondary-foreground">Longitude: {report.longitude.toFixed(4)}</p> <p className="text-sm text-secondary-foreground">Elevation: {report.elevation}</p> <p className="text-sm text-secondary-foreground">River Flow: {report.riverFlow}</p> <p className="text-sm text-secondary-foreground">Prediction: {report.prediction}</p> <p className="text-sm text-secondary-foreground">Reasoning: {report.reasoning}</p>
+                  <p className="text-sm text-secondary-foreground">Latitude: {report.latitude.toFixed(4)}</p>
+                  <p className="text-sm text-secondary-foreground">Longitude: {report.longitude.toFixed(4)}</p>
+                  <p className="text-sm text-secondary-foreground">Elevation: {report.elevation}</p>
+                  <p className="text-sm text-secondary-foreground">River Flow: {report.riverFlow}</p>
+                  <p className="text-sm text-secondary-foreground">River Flow Difference: {report.riverFlowDifference}</p>
+                  <p className="text-sm text-secondary-foreground">River Historic Data: {report.riverHistoricData}</p>
+                  <p className="text-sm text-secondary-foreground">Soil Type: {report.soilType}</p>
+                  <p className="text-sm text-secondary-foreground">Rock Formation: {report.rockFormation}</p>
+                  <p className="text-sm text-secondary-foreground">Water Table: {report.waterTable}</p>
+                  <p className="text-sm text-secondary-foreground">Soil Moisture: {report.soilMoisture}</p>
+                  <p className="text-sm text-secondary-foreground">Flooding Risk: {report.floodingRisk}</p>
+                  <p className="text-sm text-secondary-foreground">Prediction: {report.prediction}</p>
+                  <p className="text-sm text-secondary-foreground">Reasoning: {report.reasoning}</p>
                 </CardContent>
               </Card>
             )}

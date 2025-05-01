@@ -1,4 +1,4 @@
-import type { Coordinates } from './coordinates';
+import type { Coordinates } from '@/services/coordinates';
 
 /**
  * Represents river data at a specific location.

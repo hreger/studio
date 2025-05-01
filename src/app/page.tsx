@@ -1,6 +1,5 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
 import type { Coordinates } from '@/services/coordinates';
 import type { GenerateOxbowReportOutput } from '@/ai/flows/generate-oxbow-report';
 import 'leaflet/dist/leaflet.css';
@@ -11,6 +10,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Loader2, LocateFixed, CloudIcon } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useToast } from '@/hooks/use-toast';
 import { Toaster } from '@/components/ui/toaster';
 
@@ -24,34 +24,35 @@ interface AnalyzeDataAndPredictParams {
   riverData: string | null;
 }
 
-const analyzeDataAndPredict = async (data: AnalyzeDataAndPredictParams): Promise<string> => {
+interface PredictionResult {
+  prediction: string;
+  elevation: string;
+  riverFlow: string;
+  reasoning: string;
+  latitude: number;
+  longitude: number;
+}
+
+const analyzeDataAndPredict = async (data: AnalyzeDataAndPredictParams): Promise<PredictionResult> => {
   const { latitude, longitude, elevation, riverData } = data;
-  console.log('analyzeDataAndPredict data:', data);
-  // Dummy response. This will be replaced by a trained AI model
-  if (!elevation || !riverData) {
-    return "Not enough data to make a prediction.";
-  }
-  const riverFlow = parseFloat(riverData);
+  const riverFlow = riverData ? parseFloat(riverData) : 0;
 
-  let prediction = "Low likelihood of oxbow lake formation.";
+  let prediction = 'Low likelihood of oxbow lake formation.';
+  let reasoning = 'Not enough data to make a prediction.';
 
-  // Example rules (very simplified - you'd need to research real factors)
-  if (elevation < 100) { // Low elevation
-    prediction = "Moderate likelihood of oxbow lake formation due to low elevation.";
-    if (riverFlow > 500) { // High river flow
-      prediction = "High likelihood of oxbow lake formation due to low elevation and high river flow.";
+  if (elevation && riverData) {
+    if (elevation < 100) {
+      prediction = 'Moderate likelihood of oxbow lake formation.';
+      reasoning = `Due to the low elevation of ${elevation} meters, there is a moderate likelihood of oxbow lake formation.`;
+      if (riverFlow > 500) {
+        prediction = 'High likelihood of oxbow lake formation.';
+        reasoning = `Due to the low elevation of ${elevation} meters and a high river flow of ${riverFlow} cfs, there is a high likelihood of oxbow lake formation.`;
+      }
+    } else {
+      reasoning = `The elevation of ${elevation} meters is not low enough to increase the likelihood of oxbow lake formation.`;
     }
   }
-
-  // Additional rules can go here...
-
-  const report = `
-      Analysis for Latitude: ${latitude.toFixed(4)}, Longitude: ${longitude.toFixed(4)}
-      Elevation: ${elevation} meters
-      River Flow: ${riverFlow}
-      Prediction: ${prediction}
-    `;
-  return report;
+  return { prediction, elevation: `${elevation} meters`, riverFlow: `${riverFlow} cfs`, reasoning, latitude, longitude };
 };
 
 export default function Home() {
@@ -64,6 +65,11 @@ export default function Home() {
   const mapRef = useRef<HTMLDivElement>(null);
   const leafletMap = useRef<L.Map | null>(null);
   const markers = useRef<L.Marker[]>([]);
+
+
+  type GenerateOxbowReportOutput = PredictionResult;
+
+
 
   const getElevation = async (latitude: number, longitude: number) => {
     const url = `https://epqs.nationalmap.gov/v1/json?x=${longitude}&y=${latitude}&wkid=4326&units=Meters`;
@@ -151,14 +157,13 @@ export default function Home() {
     const riverData = await getRiverData(latitude, longitude);
     console.log('River Data:', riverData);
 
-    const report = await analyzeDataAndPredict({
+    const result = await analyzeDataAndPredict({
       latitude,
       longitude,
       elevation,
       riverData,
     });
-
-    return { report }; // Return the report
+    return result;
   };
 
   const handlePrediction = async () => {
@@ -349,11 +354,11 @@ export default function Home() {
                 <CardHeader>
                   <CardTitle className="text-lg text-primary">Prediction Report</CardTitle>
                   <CardDescription>
-                    Analysis for Latitude: {selectedLocation?.latitude.toFixed(4)}, Longitude: {selectedLocation?.longitude.toFixed(4)}
+                  
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-sm text-secondary-foreground">{report.report}</p>
+                <p className="text-sm text-secondary-foreground">Latitude: {report.latitude.toFixed(4)}</p> <p className="text-sm text-secondary-foreground">Longitude: {report.longitude.toFixed(4)}</p> <p className="text-sm text-secondary-foreground">Elevation: {report.elevation}</p> <p className="text-sm text-secondary-foreground">River Flow: {report.riverFlow}</p> <p className="text-sm text-secondary-foreground">Prediction: {report.prediction}</p> <p className="text-sm text-secondary-foreground">Reasoning: {report.reasoning}</p>
                 </CardContent>
               </Card>
             )}
